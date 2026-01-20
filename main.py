@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, Form, Query, HTTPException, BackgroundT
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import uuid
 import os
@@ -11,6 +12,8 @@ from compliance_main import compliance_check
 from extract_images_from_docx import first_docx_image_bytes
 from models import PresignRequest, CheckRequest, ImageResponse
 from validate_uploaded_file import validate_uploaded_file
+
+from creating_vgc_list import create_vgc_list
 
 # --------------------------------------------------------
 # Global variables
@@ -27,6 +30,10 @@ from state import (
     read_check_results,
     list_check_results,
     store_file,
+    load_vgc_list_check_results,
+    update_vgc_list_check_results,
+    read_vgc_list_check_result,
+    list_vgc_list_check_results,
 )
 
 
@@ -159,7 +166,7 @@ async def direct_upload(
 
     with open(file_path, "wb") as f:
         f.write(await file.read())
-        
+
     validate_uploaded_file(document_type, file_path)
 
     store_file(unique_id, document_type, filename)
@@ -380,6 +387,119 @@ def get_check_status(check_id: str) -> Dict[str, Any]:
 
 
 # --------------------------------------------------------
+# Creating VGC List
+# --------------------------------------------------------
+
+
+class ObjectKey(BaseModel):
+    objectKey: str
+
+
+class CreateVGCRequest(BaseModel):
+    documentKeys: List[ObjectKey]
+    source: Optional[str] = "childcare"
+    group: Optional[str] = None
+
+
+def run_create_vgc(
+    background_tasks, documents: List[Dict[str, Any]], source: str, group: Optional[str]
+):
+    check_id = str(uuid.uuid4())
+    background_tasks.add_task(
+        run_create_vgc_background, check_id, documents, source, group
+    )
+
+    update_vgc_list_check_results(
+        check_id,
+        "queued",
+        0.0,
+        summary=f"VGC-lijst generatie gestart ({source})",
+        date=[],
+        issues=None,
+        references=[[d.get("type", ""), d.get("file", "")] for d in documents],
+        modules=["createVGC"],
+        group=group or "",
+        result=None,
+    )
+    return check_id
+
+
+def run_create_vgc_background(
+    check_id: str, documents: List[Dict[str, Any]], source: str, group: Optional[str]
+):
+    try:
+        result = create_vgc_list(check_id, documents, update_vgc_list_check_results)
+
+        # progress already reached 100 via the create_vgc_list() stage updates
+        update_vgc_list_check_results(
+            check_id,
+            "completed",
+            0,
+            summary=f"VGC-lijst generatie voltooid ({source})",
+            references=[[d.get("type", ""), d.get("file", "")] for d in documents],
+            modules=["createVGC"],
+            group=group or "",
+            result=result,
+        )
+    except Exception as e:
+        update_vgc_list_check_results(
+            check_id,
+            "error",
+            0,
+            summary=f"VGC-lijst generatie mislukt: {e}",
+            issues=[{"error": str(e)}],
+            references=[[d.get("type", ""), d.get("file", "")] for d in documents],
+            modules=["createVGC"],
+            group=group or "",
+            result=None,
+        )
+
+
+@app.post("/create-vgc")
+def start_create_vgc(req: CreateVGCRequest, background_tasks: BackgroundTasks):
+    documents = []
+    for doc_key in req.documentKeys:
+        d = get_file_info_by_key(doc_key.objectKey)
+        if d:
+            documents.append(d)
+
+    # require 3 doc types
+    staff_ok = any(d["type"] == "staff-planning" for d in documents)
+    planning_ok = any(d["type"] == "child-planning" for d in documents)
+    reg_ok = any(d["type"] == "child-registration" for d in documents)
+
+    missing = []
+    if not staff_ok:
+        missing.append("staff-planning")
+    if not planning_ok:
+        missing.append("child-planning")
+    if not reg_ok:
+        missing.append("child-registration")
+    if missing:
+        return {"status": "error", "missingDocuments": missing}
+
+    check_id = run_create_vgc(background_tasks, documents, req.source, req.group)
+    return {"check_id": check_id}
+
+
+@app.get(
+    "/checks-create-vgc/list",
+    description="Returns simplified check results",
+)
+def get_check_VGC_Creating_list():
+    checks = list_vgc_list_check_results()
+    return checks
+
+
+@app.get("/checks-create-vgc/{check_id}")
+def get_create_vgc_result(check_id: str):
+    result = read_vgc_list_check_result(check_id)
+    if not result:
+        return JSONResponse(status_code=404, content={"error": "Check not found"})
+    return result
+
+
+# --------------------------------------------------------
 # Root
 # --------------------------------------------------------
 @app.get("/")
@@ -390,7 +510,13 @@ def read_root():
 # --------------------------------------------------------
 # Static files
 # --------------------------------------------------------
-app.mount("/documents", StaticFiles(directory=UPLOAD_DIR), name="documents")
+# app.mount("/documents", StaticFiles(directory=UPLOAD_DIR), name="documents")
+
+app.mount(
+    "/documents",
+    StaticFiles(directory=UPLOAD_DIR, check_dir=False),
+    name="documents",
+)
 
 
 @app.on_event("startup")
@@ -398,3 +524,4 @@ async def startup_event():
     create_file_storage()
     scan_documents()
     load_check_results()
+    load_vgc_list_check_results()

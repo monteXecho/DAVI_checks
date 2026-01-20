@@ -215,3 +215,152 @@ def get_file_by_original_name(original_filename: str):
 def store_file(unique_id, document_type, filename):
     with FILE_STORE_LOCK:
         FILE_STORE[unique_id] = {"type": document_type, "file": filename}
+
+
+# --------------------------------------------------------
+# creating VGC list
+# --------------------------------------------------------
+
+VGC_LIST_DATA_FILE = "vgc_list_data.json"
+
+# Global in-memory stores
+VGC_LIST_CHECK_RESULTS: Dict[str, Dict[str, Any]] = {}
+
+# Thread locks
+VGC_LIST_CHECK_RESULTS_LOCK = threading.Lock()
+
+
+def load_vgc_list_check_results() -> None:
+    """
+    Load VGC_LIST_CHECK_RESULTS from data.json into memory.
+    Creates the file if it does not exist.
+    """
+    global VGC_LIST_CHECK_RESULTS
+    if not os.path.exists(VGC_LIST_DATA_FILE):
+        with open(VGC_LIST_DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump({}, f, indent=2)
+        VGC_LIST_CHECK_RESULTS = {}
+        return
+
+    with VGC_LIST_CHECK_RESULTS_LOCK:
+        try:
+            with open(VGC_LIST_DATA_FILE, "r", encoding="utf-8") as f:
+                VGC_LIST_CHECK_RESULTS = json.load(f)
+        except json.JSONDecodeError:
+            # If file is corrupted, reset to empty dict
+            VGC_LIST_CHECK_RESULTS = {}
+
+
+# save data only when the compliance check is done
+def save_vgc_list_check_results(data) -> None:
+    """
+    Save the current VGC_LIST_CHECK_RESULTS to data.json.
+    """
+    with open(VGC_LIST_DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, default=str)
+
+
+def update_vgc_list_check_results(
+    check_id: str,
+    status_message: Optional[str] = "",
+    status_progress: Optional[float] = 0.0,
+    *,
+    summary: Optional[str] = None,
+    group: Optional[str] = None,
+    date: List[str] = None,
+    issues: Optional[List[Any]] = None,
+    references: Optional[List[List[str]]] = None,
+    modules: Optional[List[str]] = None,
+    result: Optional[List[Any]] = None,
+) -> Dict[str, Any]:
+    """Thread-safe update of VGC_LIST_CHECK_RESULTS."""
+    with VGC_LIST_CHECK_RESULTS_LOCK:
+        entry = VGC_LIST_CHECK_RESULTS.get(
+            check_id,
+            {
+                "summary": "",
+                "date": [],
+                "issues": None,
+                "references": [],
+                "status": {"message": "queued", "progress": 0},
+                "modules": [],
+                "group": "KDV RI Vrolijke Verkenners",
+                "result": None,
+            },
+        )
+
+        if summary is not None:
+            entry["summary"] = summary
+        if date is not None:
+            entry["date"] = date
+        if issues is not None:
+            entry["issues"] = issues
+        if references is not None:
+            entry["references"] = references
+        if modules is not None:
+            entry["modules"] = modules
+        if result is not None:
+            entry["result"] = result
+        if group is not None:
+            entry["group"] = group
+
+        total_score = 80
+        if "threeHours" in entry["modules"]:
+            total_score += 30
+        if "vgc" in entry["modules"]:
+            total_score += 10
+
+        status = entry.get("status") or {"message": "queued", "progress": 0}
+        cur_progress = float(status["progress"])
+        if status_message is not None:
+            status["message"] = status_message
+        if status_progress is not None:
+            try:
+                p = status_progress / total_score * 100
+            except Exception:
+                p = 0.0
+            status["progress"] = max(0, min(100, cur_progress + p))
+
+        entry["status"] = status
+        entry["updatedAt"] = datetime.utcnow().isoformat() + "Z"
+
+        VGC_LIST_CHECK_RESULTS[check_id] = entry
+        if status_message == "completed":
+            save_vgc_list_check_results(VGC_LIST_CHECK_RESULTS)
+        return dict(entry)
+
+
+def read_vgc_list_check_results():
+    with VGC_LIST_CHECK_RESULTS_LOCK:
+        return VGC_LIST_CHECK_RESULTS
+
+
+def read_vgc_list_check_result(check_id):
+    with VGC_LIST_CHECK_RESULTS_LOCK:
+        result = VGC_LIST_CHECK_RESULTS.get(
+            check_id,
+            {
+                "summary": None,
+                "date": None,
+                "issues": None,
+                "references": None,
+                "status": {"message": "queued", "progress": 0},
+                "modules": [],
+                "group": "KDV RI Vrolijke Verkenners",
+                "result": None,
+            },
+        )
+        return result
+
+
+def list_vgc_list_check_results():
+    with VGC_LIST_CHECK_RESULTS_LOCK:
+        results = []
+        for check_id, data in VGC_LIST_CHECK_RESULTS.items():
+            results.append(
+                {
+                    "check_id": check_id,
+                    "updatedAt": data.get("updatedAt"),
+                }
+            )
+        return results

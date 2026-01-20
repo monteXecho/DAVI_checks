@@ -1,0 +1,10 @@
+services:
+  backend:
+    build: .
+    container_name: vgc_backend
+    ports:
+      - "18895:18895"
+    environment:
+      # Optional, but useful:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

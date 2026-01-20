@@ -11,6 +11,15 @@ from normalize_staff_name import extract_names, normalize_names_in_list
 from extract_images_from_docx import extract_images_from_docx
 from state import update_check_results
 
+
+# HSV detection parameters (from original)
+COLOR_PARAMS = {
+    "title": dict(h=215, s_low=26.0, s_high=27.0, v_low=87.0, v_high=88.0),
+    "green": dict(h=90, s_low=26.0, s_high=49.8, v_low=89.0, v_high=100.0),
+    # "blue": dict(h=180, s_low=53.9, s_high=98.7, v_low=92.2, v_high=99.6),
+    "yellow": dict(h=59, s_low=20.4, s_high=56, v_low=92.2, v_high=99.9),
+}
+
 # ---------- images ----------
 
 
@@ -71,16 +80,10 @@ def get_working_days(week_str):
 # ---------- HSV detection (from your crop-detect-all-blocks.py) ----------
 
 
-def detect_color_blocks_in_memory(image_bgr, crop_pad_px=2, crop_pad_py=2):
+def detect_color_blocks_in_memory(
+    image_bgr, colors=["title", "green"], crop_pad_px=2, crop_pad_py=2
+):
     Detection = namedtuple("Detection", ["color", "x", "y", "w", "h", "crop"])
-
-    # HSV detection parameters (from original)
-    COLOR_PARAMS = {
-        "title": dict(h=215, s_low=26.0, s_high=27.0, v_low=87.0, v_high=88.0),
-        "green": dict(h=90, s_low=26.0, s_high=49.8, v_low=89.0, v_high=100.0),
-        # "blue": dict(h=180, s_low=53.9, s_high=98.7, v_low=92.2, v_high=99.6),
-        # "yellow": dict(h=59, s_low=20.4, s_high=56, v_low=92.2, v_high=99.9),
-    }
 
     def deg_to_cv_h(deg):
         return int(round((deg % 360) / 2.0))
@@ -107,7 +110,8 @@ def detect_color_blocks_in_memory(image_bgr, crop_pad_px=2, crop_pad_py=2):
     def build_color_masks():
         masks = {}
         h_pad_deg = 6
-        for color, p in COLOR_PARAMS.items():
+        for color in colors:
+            p = COLOR_PARAMS[color]
             lo, hi = hsv_band(
                 p["h"],
                 p["s_low"],
@@ -234,18 +238,21 @@ def calculate_timestamp_time_bar(y, ini_y=610, interval=27.5, s="06:00"):
 # ---------- Master Orchestration ----------
 
 
-def process_img_blocks_and_ocr(ocr, date_arr, img):
+def process_img_blocks_and_ocr(ocr, date_arr, img, *, ignore_date_filter: bool = False):
     final_blocks = []
 
     date_crop = crop_date_region(img)
     cv2.imwrite("test.png", date_crop)
     date_ocr = recognize_text_from_crop_paddleocr(ocr, date_crop)
     print("staff-planning", date_ocr)
-    print("date exist", any_date_in_week(date_arr, date_ocr))
-    if not any_date_in_week(date_arr, date_ocr):
-        return []
+    if not ignore_date_filter:
+        # Existing behavior: only keep rows whose detected date is in the requested week/date set.
+        print("date exist", any_date_in_week(date_arr, date_ocr))
+        if not any_date_in_week(date_arr, date_ocr):
+            return []
 
-    blocks = detect_color_blocks_in_memory(img)
+    colors = ["title", "green", "yellow"] if ignore_date_filter else ["title", "green"]
+    blocks = detect_color_blocks_in_memory(img, colors)
     block_datas = []
     minW = 0
     maxW = 0
@@ -310,8 +317,10 @@ def process_img_blocks_and_ocr(ocr, date_arr, img):
     return filtered
 
 
-def staff_planning_aday(ocr, date_arr, img):
-    filtered_data = process_img_blocks_and_ocr(ocr, date_arr, img)
+def staff_planning_aday(ocr, date_arr, img, *, ignore_date_filter: bool = False):
+    filtered_data = process_img_blocks_and_ocr(
+        ocr, date_arr, img, ignore_date_filter=ignore_date_filter
+    )
 
     names_texts = [item["text"] for item in filtered_data]
 
@@ -323,27 +332,38 @@ def staff_planning_aday(ocr, date_arr, img):
     return filtered_data
 
 
-def staff_planning_main_process(check_id, ocr, date_arr, files, type):
+def staff_planning_main_process(
+    check_id,
+    ocr,
+    date_arr,
+    files,
+    type,
+    *,
+    ignore_date_filter: bool = False,
+    update_fn=update_check_results,
+):
     filtered_data = []
     total = 0
     if type == "docx":
         images = extract_images_from_docx(f"documents/staff-planning/{files[0]}")
         total = len(images)
         for img in images:
-            res = staff_planning_aday(ocr, date_arr, img)
+            res = staff_planning_aday(
+                ocr, date_arr, img, ignore_date_filter=ignore_date_filter
+            )
             filtered_data += res
-            update_check_results(
-                check_id, "OCR-personeelsplanning", float(30 / total)
-            )  #   OCR staff-planning
+            if update_fn:
+                update_fn(check_id, "OCR-personeelsplanning", float(30 / total))
     else:
         total = len(files)
         for img_path in files:
             img = load_image_as_bgr(img_path)
-            res = staff_planning_aday(ocr, date_arr, img)
+            res = staff_planning_aday(
+                ocr, date_arr, img, ignore_date_filter=ignore_date_filter
+            )
             filtered_data += res
-            update_check_results(
-                check_id, "OCR-personeelsplanning", float(30 / total)
-            )  #   OCR staff-planning
+            if update_fn:
+                update_fn(check_id, "OCR-personeelsplanning", float(30 / total))
     with open("staff-planning.json", "w", encoding="utf-8") as f:
         f.write(json.dumps(filtered_data, ensure_ascii=False, default=str) + "\n")
 

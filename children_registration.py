@@ -223,14 +223,15 @@ def get_children_list_text(ocr, img):
     return structured
 
 
-def process_ocr(ocr, date_arr, img):
+def process_ocr(ocr, date_arr, img, *, ignore_date_filter: bool = False):
     # ----- get date
 
     date_text = get_date_text(ocr, img)
     print("child-registration", date_text)
-    print("same date", date_text not in date_arr)
-    if date_text not in date_arr:
-        return None, []
+    if not ignore_date_filter:
+        print("same date", date_text not in date_arr)
+        if date_text not in date_arr:
+            return None, []
 
     # ----- get children list
 
@@ -272,17 +273,29 @@ def get_structured_children_register(children_list):
     return result
 
 
-def children_registration_main_process(check_id, ocr, date_arr, files, type):
+def children_registration_main_process(
+    check_id,
+    ocr,
+    date_arr,
+    files,
+    type,
+    *,
+    ignore_date_filter: bool = False,
+    update_fn=update_check_results,
+):
     children_list = []
     total = 0
     if type == "docx":
         images = extract_images_from_docx(f"documents/child-registration/{files[0]}")
         total = len(images)
         for img in images:
-            date_text, children = process_ocr(ocr, date_arr, img)
+            date_text, children = process_ocr(
+                ocr, date_arr, img, ignore_date_filter=ignore_date_filter
+            )
             if date_text:
                 children_list.append((date_text, children))
-            update_check_results(check_id, "OCR personeelsplanning", float(30 / total))
+            if update_fn:
+                update_fn(check_id, "OCR personeelsplanning", float(30 / total))
 
     elif type == "xlsx":
         for file_name in files:
@@ -294,10 +307,13 @@ def children_registration_main_process(check_id, ocr, date_arr, files, type):
         total = len(files)
         for source_path in files:
             img = load_image_as_bgr(source_path)
-            date_text, children = process_ocr(ocr, date_arr, img)
+            date_text, children = process_ocr(
+                ocr, date_arr, img, ignore_date_filter=ignore_date_filter
+            )
             if date_text:
                 children_list.append((date_text, children))
-            update_check_results(check_id, "OCR personeelsplanning", float(30 / total))
+            if update_fn:
+                update_fn(check_id, "OCR personeelsplanning", float(30 / total))
 
     children_register = get_structured_children_register(children_list)
 
@@ -307,7 +323,13 @@ def children_registration_main_process(check_id, ocr, date_arr, files, type):
     return children_register
 
 
-def children_registration_main_process_docx(ocr, datestr, docx):
+def children_registration_main_process_docx(
+    ocr,
+    datestr,
+    docx,
+    *,
+    ignore_date_filter: bool = False,
+):
     """get children registration time
 
     Args:
@@ -320,7 +342,9 @@ def children_registration_main_process_docx(ocr, datestr, docx):
     images = extract_images_from_docx(f"documents/child-registration/{docx[0]}")
     children_list = []
     for img in images:
-        date_text, children = process_ocr(ocr, datestr, img)
+        date_text, children = process_ocr(
+            ocr, datestr, img, ignore_date_filter=ignore_date_filter
+        )
         if date_text:
             children_list.append((date_text, children))
     children_register = get_structured_children_register(children_list)
@@ -378,7 +402,8 @@ def readXLSX(file_name):
             if date_text is None:
                 date_text = extract_date_from_text(sheet_name)
             if date_text is None:
-                continue
+                # continue
+                date_text = "common"
             part = sheet_df.to_csv(index=False, header=False)
 
             reader = csv.reader(io.StringIO(part))

@@ -38,8 +38,8 @@ def validate_uploaded_file(document_type: str, file_path: str):
         )
 
     mime = get_mime_type(file_path)
-    if not any(k in mime for k in ["pdf", "word", "image", "excel", "text", "json", "sheet"]):
-        raise HTTPException(status_code=400, detail="Niet-ondersteund FILE-type")
+    if not any(k in mime for k in ["pdf", "word", "image", "excel", "text", "json", "sheet", "octet-stream"]):
+        raise HTTPException(status_code=400, detail=f"Niet-ondersteund FILE-type: {mime}")
 
     # ---------- 2. Content validation ----------
     if ext == ".pdf":

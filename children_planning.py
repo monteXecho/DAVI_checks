@@ -13,6 +13,24 @@ from normalize_child_name import normalize_childrennames_in_list
 from extract_images_from_docx import extract_images_from_docx
 from state import update_check_results
 
+
+COLOR_PARAMS = {
+    "title": dict(  # for page ss
+        h=194, s_low=86.8, s_high=90.8, v_low=89.0, v_high=93.0
+    ),
+    "purple": dict(h=234, s_low=16.1, s_high=20.1, v_low=82.7, v_high=86.7),
+    "red": dict(h=348, s_low=30.8, s_high=34.8, v_low=70.9, v_high=74.9),
+    "blue": dict(h=204, s_low=39.9, s_high=43.9, v_low=90.5, v_high=94.5),
+}
+
+COLOR_PARAMS_PDF = {
+    "title": dict(h=249, s_low=25.3, s_high=45.3, v_low=90.0, v_high=100.0),
+    "purple": dict(h=234, s_low=16.1, s_high=20.1, v_low=82.7, v_high=86.7),
+    "red": dict(h=348, s_low=30.8, s_high=34.8, v_low=70.9, v_high=74.9),
+    "blue": dict(h=204, s_low=39.9, s_high=43.9, v_low=90.5, v_high=94.5),
+}
+
+
 # ---------- PDF to in-memory images ----------
 
 
@@ -139,30 +157,34 @@ def get_users_block(img, type):
 
 
 def extract_name_and_dob(user_data):
-    parts_before_date = []
-    dob = None
+    try:
+        parts_before_date = []
+        dob = None
 
-    for item in user_data:
-        tokens = item.strip().split()
-        for token in tokens:
-            if re.match(r"^\d{2}[- ]\d{2}[- ]\d{4}$", token):
-                try:
-                    normalized = re.sub(r"[ ]", "-", token)
-                    datetime.strptime(normalized, "%d-%m-%Y")
-                    dob = normalized
-                except ValueError:
-                    pass
-                continue
+        for item in user_data:
+            tokens = item.strip().split()
+            for token in tokens:
+                if re.match(r"^\d{2}[- ]\d{2}[- ]\d{4}$", token):
+                    try:
+                        normalized = re.sub(r"[ ]", "-", token)
+                        datetime.strptime(normalized, "%d-%m-%Y")
+                        dob = normalized
+                    except ValueError:
+                        pass
+                    continue
 
-            if token in ("M", "J"):
-                continue
-            if token.isdigit():
-                continue
+                if token in ("M", "J"):
+                    continue
+                if token.isdigit():
+                    continue
 
-            parts_before_date.append(token)
+                parts_before_date.append(token)
 
-    name = " ".join(parts_before_date).replace(",", "").strip()
-    return (name, dob) if dob else None
+        name = " ".join(parts_before_date).replace(",", "").strip()
+        return (name, dob) if dob else None
+    except Exception as e:
+        print(f"Error request: {e}")
+        return None
 
 
 def crop_users_region_read(ocr, img, type):
@@ -201,21 +223,6 @@ def crop_users_region_read(ocr, img, type):
 
 
 # ---------- HSV detection (from your crop-detect-all-blocks.py) ----------
-
-
-COLOR_PARAMS = {
-    "title": dict(  # for page ss
-        h=194, s_low=86.8, s_high=90.8, v_low=89.0, v_high=93.0
-    ),
-    "purple": dict(h=234, s_low=16.1, s_high=20.1, v_low=82.7, v_high=86.7),
-    "red": dict(h=348, s_low=30.8, s_high=34.8, v_low=70.9, v_high=74.9),
-}
-
-COLOR_PARAMS_PDF = {
-    "title": dict(h=249, s_low=25.3, s_high=45.3, v_low=90.0, v_high=100.0),
-    "purple": dict(h=234, s_low=16.1, s_high=20.1, v_low=82.7, v_high=86.7),
-    "red": dict(h=348, s_low=30.8, s_high=34.8, v_low=70.9, v_high=74.9),
-}
 
 
 def deg_to_cv_h(deg: float) -> int:
@@ -386,15 +393,19 @@ def detect_color_blocks_in_memory(
 
 
 def recognize_text_from_crop_paddleocr(ocr, image_np):
-    result = ocr.predict(image_np)
-    out = []
-    for res in result:
-        rec_texts = getattr(res, "rec_texts", None)
-        if not rec_texts and isinstance(res, dict) and "rec_texts" in res:
-            rec_texts = res["rec_texts"]
-        if rec_texts:
-            out.extend([t.strip() for t in rec_texts if t.strip()])
-    return " ".join(out)
+    try:
+        result = ocr.predict(image_np)
+        out = []
+        for res in result:
+            rec_texts = getattr(res, "rec_texts", None)
+            if not rec_texts and isinstance(res, dict) and "rec_texts" in res:
+                rec_texts = res["rec_texts"]
+            if rec_texts:
+                out.extend([t.strip() for t in rec_texts if t.strip()])
+        return " ".join(out)
+    except Exception as e:
+        print(f"Error request: {e}")
+        return ""
 
 
 # ---------- Master Orchestration ----------
@@ -488,12 +499,20 @@ def get_age(dob_str: str, fmt: str = "%d-%m-%Y") -> int:
         return 0
 
 
-def process_img_blocks_and_ocr(ocr, date_arr, img, type):
+def process_img_blocks_and_ocr(
+    ocr,
+    date_arr,
+    img,
+    type,
+    *,
+    ignore_date_filter: bool = False,
+):
     date_text = get_date_text(ocr, img, type)
     print("child-planning", date_text)
-    print("date exist", any_date_in_week(date_arr, date_text))
-    if not any_date_in_week(date_arr, date_text):
-        return []
+    if not ignore_date_filter:
+        print("date exist", any_date_in_week(date_arr, date_text))
+        if not any_date_in_week(date_arr, date_text):
+            return []
 
     final_blocks = []
     titles = []
@@ -504,7 +523,11 @@ def process_img_blocks_and_ocr(ocr, date_arr, img, type):
     hsv = cv2.cvtColor(main_block_img, cv2.COLOR_BGR2HSV)
     blocks = []
 
-    for color, _ in COLOR_PARAMS.items():
+    for color in (
+        ["title", "purple", "blue"]
+        if ignore_date_filter
+        else ["title", "purple", "red"]
+    ):
         boxes = detect_color_blocks_in_memory(color, main_block_img, hsv, type)
         blocks += boxes
 
@@ -558,31 +581,49 @@ def process_img_blocks_and_ocr(ocr, date_arr, img, type):
     return final_blocks
 
 
-def children_planning_main_process(check_id, ocr, date_arr, files, type="docx"):
+def children_planning_main_process(
+    check_id,
+    ocr,
+    date_arr,
+    files,
+    type="docx",
+    *,
+    ignore_date_filter: bool = False,
+    update_fn=update_check_results,
+):
     _children_list = []
     total = 0
     if type == "docx":  # doc
         images = extract_images_from_docx(f"documents/child-planning/{files[0]}")
         total = len(images)
         for img in images:
-            children = process_img_blocks_and_ocr(ocr, date_arr, img, type)
+            children = process_img_blocks_and_ocr(
+                ocr, date_arr, img, type, ignore_date_filter=ignore_date_filter
+            )
             _children_list += children
-            update_check_results(check_id, "OCR kinderplanning", float(30 / total))
+            if update_fn:
+                update_fn(check_id, "OCR kinderplanning", float(30 / total))
     elif type == "pdfx":  #   pdf
         images = pdf_to_images_in_memory(f"documents/child-planning/{files[0]}")
         rois = crop_non_white_region(images)
         total = len(rois)
         for page_num, img in enumerate(rois, 1):
-            children = process_img_blocks_and_ocr(ocr, date_arr, img, type)
+            children = process_img_blocks_and_ocr(
+                ocr, date_arr, img, type, ignore_date_filter=ignore_date_filter
+            )
             _children_list += children
-            update_check_results(check_id, "OCR kinderplanning", float(30 / total))
+            if update_fn:
+                update_fn(check_id, "OCR kinderplanning", float(30 / total))
     else:  #   image
         total = len(files)
         for source_path in files:
             img = load_image_as_bgr(f"documents/child-planning/{source_path}")
-            children = process_img_blocks_and_ocr(ocr, date_arr, img, type)
+            children = process_img_blocks_and_ocr(
+                ocr, date_arr, img, type, ignore_date_filter=ignore_date_filter
+            )
             _children_list += children
-            update_check_results(check_id, "OCR kinderplanning", float(30 / total))
+            if update_fn:
+                update_fn(check_id, "OCR kinderplanning", float(30 / total))
     # end
 
     children = []
@@ -626,12 +667,20 @@ def children_planning_main_process(check_id, ocr, date_arr, files, type="docx"):
     return children, children_planning_pre
 
 
-def children_planning_main_process_docx(ocr, datestr, docx):
+def children_planning_main_process_docx(
+    ocr,
+    datestr,
+    docx,
+    *,
+    ignore_date_filter: bool = False,
+):
     images = extract_images_from_docx(f"documents/child-planning/{docx[0]}")
 
     _children_list = []
     for img in images:
-        children = process_img_blocks_and_ocr(ocr, datestr, img)
+        children = process_img_blocks_and_ocr(
+            ocr, datestr, img, "docx", ignore_date_filter=ignore_date_filter
+        )
         _children_list += children
     # end
 
